@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <!-- 文字コードはutf-8を使用する -->
+    <title>タイトル</title>
+    <!-- タイトルバーに表示されるメッセージ -->
+
+    <!-- 以下の2行でLeafletで使用するスタイルシート(.css)とライブラリ(.js)を読み込む -->
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.5.1/dist/leaflet.css"
+      integrity="sha512-xwE/Az9zrjBIphAcBb3F6JVqxf46+CDLwfLMHloNu6KEQCAWi6HcDUbeOfBIptF7tcCzusKFjFw2yuvEpDL9wQ=="
+      crossorigin=""
+    />
+    <script
+      src="https://unpkg.com/leaflet@1.5.1/dist/leaflet.js"
+      integrity="sha512-GffPMF3RvMeYyc1LWMHtK8EbPv0iNZ8/oTtHPx9/cc2ILxQ+u905qIwdpULaqDkyBKgOaB57QTMg7ztg8Jm2Og=="
+      crossorigin=""
+    ></script>
+
+    <!-- 以下の2行で，MQTT over Websocketを使うライブラリ(.js)を読み込む -->
+    <script src="https://code.jquery.com/jquery-3.4.1.min.js"></script>
+    <script src="mqttws31.js" type="text/javascript"></script>
+
+    <!-- echo.htmlにあったスタイルシートをコピー -->
+    <style>
+      .box {
+        width: 440px;
+        float: left;
+        margin: 0 20px 0 20px;
+      }
+
+      .box div,
+      .box input {
+        border: 1px solid;
+        -moz-border-radius: 4px;
+        border-radius: 4px;
+        width: 100%;
+        padding: 5px;
+        margin: 30px 0 10px 0;
+      }
+
+      .box div {
+        border-color: grey;
+        height: 300px;
+        overflow: auto;
+      }
+
+      div code {
+        display: block;
+      }
+
+      #received_message div code {
+        -moz-border-radius: 2px;
+        border-radius: 2px;
+        border: 1px solid #eee;
+        margin-bottom: 5px;
+      }
+
+      #log div {
+        font-size: 0.8em;
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- このmapidと名付けられたdiv要素の中に地図を表示する -->
+    <div
+      id="mapid"
+      style="
+        width: 90%;
+        height: 400px;
+        margin-top: 20px;
+        margin-left: 5%;
+        margin-right: 5%;
+      "
+    ></div>
+
+    <div
+      id="received_message"
+      class="box"
+      style="width: 40%; height: 100px; margin-left: 5%; margin-right: 5%"
+    >
+      <h2>Received Message</h2>
+      <div></div>
+    </div>
+    <div
+      id="log"
+      class="box"
+      style="width: 40%; height: 100px; margin-right: 5%; margin-left: 5%"
+    >
+      <h2>Logs</h2>
+      <div></div>
+    </div>
+
+    <!-- leafletのスクリプト -->
+    <script>
+      // div(id:mapid)に地図を作成
+      var mymap = L.map("mapid").setView([35.1356448, 136.9760683], 16);
+
+      // OpenStreetMapのタイルレイヤーを作る
+      var tileLayer = L.tileLayer(
+        "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        {
+          attribution:
+            '© <a href="http://osm.org/copyright">OpenStreetMap</a> contributors, <a href="http://creativecommons.org/licenses/by-sa/2.0/">CC-BY-SA</a>',
+          maxZoom: 19,
+        }
+      );
+      tileLayer.addTo(mymap);
+    </script>
+
+    <!-- MQTT over WebSocketのスクリプト -->
+    <script>
+      // MQTTブローカのアドレス，ポート番号，パス，トピック名を設定ここから
+      const wsbroker = "";  // MQTTブローカのアドレス
+      const wsport = 0;  // MQTTブローカのポート番号
+      const path = ""; // MQTTブローカのパス
+      const topic = "";  // トピック名
+      // MQTTブローカのアドレス，ポート番号，パス，トピック名を設定ここまで
+
+      // MQTTクライアントを作成
+      const client = new Paho.MQTT.Client(
+        wsbroker,
+        wsport,
+        path,
+        "clientId_" + parseInt(Math.random() * 100, 10)
+      );
+
+      // MQTTクライアントのオプションを設定
+      const options = {
+        useSSL: true,
+        userName: "",
+        password: "",
+        timeout: 3,
+        onSuccess: function () {
+          print_log(getCurrentDateTime() + " " + "CONNECTION SUCCESS");
+          client.subscribe(topic, { qos: 2 });
+        },
+        onFailure: function (message) {
+          print_log(getCurrentDateTime() + " CONNECTION FAILURE - " + message.errorMessage);
+        },
+      };
+
+      // 接続時のログを表示
+      print_log(getCurrentDateTime() + " " + "CONNECT TO " + wsbroker + ":" + wsport);
+      
+      // MQTTクライアントに接続
+      client.connect(options);
+
+      // 接続が切断されたときの処理
+      client.onConnectionLost = function (responseObject) {
+        print_log("CONNECTION LOST - " + responseObject.errorMessage);
+      };
+
+      // メッセージを受信したときの処理
+      client.onMessageArrived = function (message) {
+        console.log(message)
+        print_log(getCurrentDateTime() + " " + "RECEIVE ON " + message.destinationName);
+        print_received_message(message.payloadString);
+
+        var received_data = JSON.parse(message.payloadString);
+        var truck_identifier = received_data.IDENTIFIER;
+        var lat = parseFloat(received_data.LATITUDE); // 緯度
+        var lon = parseFloat(received_data.LONGITUDE); // 経度
+
+        // 塵芥車の位置にマーカーを表示
+        L.marker([lat, lon]).addTo(mymap).bindPopup(truck_identifier);
+      };
+
+      /**
+         * 受信したメッセージを表示する関数
+         * @param {string} 受信したメッセージ
+         */
+         function print_received_message(message) {
+        var div = $("#received_message div");
+        div.append($("<code>").text(message));
+        div.scrollTop(div.scrollTop() + 10000);
+      };
+
+      /**
+         * ログを表示する関数
+         * @return {string} ログメッセージ
+         */
+      function print_log(message) {
+        var div = $("#log div");
+        div.append($("<code>").text(message));
+        div.scrollTop(div.scrollTop() + 10000);
+      };
+
+      /**
+         * 日時情報をYYYY/MM/DD HH:MM:SS形式で取得する関数
+         * @return {string} 日時情報
+         */
+      function getCurrentDateTime() {
+        var now = new Date();
+        var year = now.getFullYear();
+        var month = ("0" + (now.getMonth() + 1)).slice(-2);
+        var day = ("0" + now.getDate()).slice(-2);
+        var hours = ("0" + now.getHours()).slice(-2);
+        var minutes = ("0" + now.getMinutes()).slice(-2);
+        var seconds = ("0" + now.getSeconds()).slice(-2);
+
+        console.log(year + "/" + month + "/" + day + " " + hours + ":" + minutes + ":" + seconds);
+        return year + "/" + month + "/" + day + " " + hours + ":" + minutes + ":" + seconds;
+      }
+
+    </script>
+  </body>
+</html>
